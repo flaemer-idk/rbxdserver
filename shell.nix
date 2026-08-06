@@ -1,3 +1,4 @@
+# shell.nix (для сервера rbxdserver)
 { pkgs ? import <nixpkgs> {} }:
 
 let
@@ -16,15 +17,19 @@ pkgs.mkShell {
   name = "rbxdserver-dev-shell";
 
   buildInputs = with pkgs; [
-    # Server Build Tools
+    # Инструменты сборки Go сервера
     go
     
-    # Python Environment for RFD
+    # Python-окружение для RFD
     my-python
     
-    # Run-time dependencies
+    # Зависимости времени выполнения (без umu-launcher)
     cage
-    umu-launcher
+    wineWow64Packages.stable
+    winetricks
+    cabextract
+    unzip
+    p7zip
   ];
 
   shellHook = ''

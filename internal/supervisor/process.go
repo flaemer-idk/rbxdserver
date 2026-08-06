@@ -1,3 +1,4 @@
+// internal/supervisor/process.go
 package supervisor
 
 import (
@@ -47,17 +48,35 @@ type Process struct {
 	mu              sync.Mutex
 }
 
-// NewProcess принимает rccPort и webPort динамически
 func NewProcess(rfdDir, configPath string, rccPort, webPort int, stateDir string, isTest bool) *Process {
 	mainPy := filepath.Join(rfdDir, "Source", "_main.py")
 	
-	// Передаем порты в аргументы RFD
-	cmd := exec.Command("python3", mainPy, "server", "--config", configPath, "--port", fmt.Sprintf("%d", rccPort), "--web_port", fmt.Sprintf("%d", webPort), "--ipv4-only")
+	cmd := exec.Command("python3", mainPy, "server", 
+		"--config", configPath, 
+		"--port", fmt.Sprintf("%d", rccPort), 
+		"--web_port", fmt.Sprintf("%d", webPort), 
+		"--ipv4-only", 
+		"--backend", "wine", // Сервер всегда использует бэкенд wine
+	)
 	cmd.Dir = rfdDir
 	
-	cmd.Env = append(os.Environ(), fmt.Sprintf("RFD_DATA_DIR=%s", stateDir))
+	winePrefix := os.Getenv("WINEPREFIX")
+	if winePrefix == "" {
+		winePrefix = filepath.Join(stateDir, "wine", ".wine-rfd")
+	}
+
+	// ИСПРАВЛЕНИЕ: Гарантируем физическое существование директории WINEPREFIX до запуска Wine
+	if err := os.MkdirAll(winePrefix, 0755); err != nil {
+		log.Printf("[Supervisor] Warning: failed to create WINEPREFIX directory %s: %v", winePrefix, err)
+	}
+
+	cmd.Env = append(os.Environ(), 
+		fmt.Sprintf("RFD_DATA_DIR=%s", stateDir),
+		fmt.Sprintf("WINEPREFIX=%s", winePrefix),
+		"WINEDEBUG=-all",
+	)
+
 	if isTest {
-		// Пробрасываем переменную окружения для отключения cage
 		cmd.Env = append(cmd.Env, "RFD_NO_CAGE=1")
 	}
 

@@ -20,8 +20,8 @@ type Supervisor struct {
 	cfg          *config.Config
 	state        string
 	currentPlace string
-	rccPort      int // ПАТЧ: Динамические порты
-	webPort      int // ПАТЧ: Динамические порты
+	rccPort      int
+	webPort      int
 	proc         *Process
 	cmds         chan cmdReq
 	mu           sync.RWMutex
@@ -44,7 +44,22 @@ func (s *Supervisor) loop() {
 			req.reply <- s.handleStart(req.slug)
 		case "stop":
 			req.reply <- s.handleStop()
+		case "crash_check":
+			s.handleCrash(req.slug)
+			req.reply <- nil
 		}
+	}
+}
+
+func (s *Supervisor) handleCrash(expectedSlug string) {
+	s.mu.Lock()
+	stillSame := s.currentPlace == expectedSlug && s.state == "Running"
+	s.mu.Unlock()
+
+	if stillSame {
+		log.Printf("[Supervisor] Process for %q died unexpectedly, resetting state", expectedSlug)
+		s.proc = nil
+		s.setState("Idle", "")
 	}
 }
 
@@ -60,7 +75,6 @@ func (s *Supervisor) handleStart(slug string) error {
 	
 	placeConf := filepath.Join(s.cfg.PlacesDir, slug, "GameConfig.toml")
 	
-	// Находим случайные свободные порты
 	rccPort, err := GetFreePort()
 	if err != nil {
 		s.setState("Idle", "")
@@ -84,7 +98,6 @@ func (s *Supervisor) handleStart(slug string) error {
 		return fmt.Errorf("failed to start process: %w", err)
 	}
 
-	// Опрашиваем Web-порт (TCP) вместо RCC-порта (UDP)
 	if err := WaitForPort(webPort, 150*time.Second); err != nil {
 		s.proc.Stop()
 		s.setState("Idle", "")

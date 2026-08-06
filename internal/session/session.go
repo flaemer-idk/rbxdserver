@@ -67,3 +67,14 @@ func (m *Manager) Count() int {
 	defer m.mu.Unlock()
 	return len(m.sessions)
 }
+
+func (m *Manager) Players() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	players := make([]string, 0, len(m.sessions))
+	for user := range m.sessions {
+		players = append(players, user)
+	}
+	return players
+}

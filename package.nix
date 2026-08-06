@@ -1,16 +1,16 @@
+# package.nix (для сервера rbxdserver)
 { lib
 , buildGoModule
 , fetchFromGitHub
 , makeWrapper
 , python3
 , cage
-, umu-launcher
+, wineWow64Packages
 , bash
 , coreutils
 }:
 
 let
-  # Собираем Python-окружение прямо внутри пакета
   pythonEnv = python3.withPackages (ps: with ps; [
     pygobject3
     websocket-client
@@ -21,8 +21,9 @@ let
     py7zr
     lz4
   ]);
+  wine = wineWow64Packages.stable;
 in
-buildGoModule rec {
+buildGoModule {
   pname = "rbxdserver";
   version = "1.0.0";
 
@@ -30,21 +31,16 @@ buildGoModule rec {
     owner = "flaemer-idk";
     repo = "rbxdserver";
     rev = "main"; 
-    hash = "sha256-5xMv72kzv7RDFQ8qUNZ856Tq5WBFP0p724fHb2HAjYg="; # Update this hash
+    hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; # Пустой хэш
   };
 
-  vendorHash = "sha256-0Qxw+MUYVgzgWB8vi3HBYtVXSq/btfh4ZfV/m1chNrA="; # Update this hash
+  vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; # Пустой хэш
 
   subPackages = [ "cmd/rbxdserver" ];
-
-  # Добавляем makeWrapper для создания обертки
   nativeBuildInputs = [ makeWrapper ];
-
-  # Оборачиваем бинарник, жестко прописывая ему PATH со всеми зависимостями.
-  # Xwayland удален.
   postInstall = ''
     wrapProgram $out/bin/rbxdserver \
-      --prefix PATH : ${lib.makeBinPath [ pythonEnv cage umu-launcher bash coreutils ]}
+      --prefix PATH : ${lib.makeBinPath [ pythonEnv cage wine bash coreutils ]}
   '';
 
   meta = with lib; {

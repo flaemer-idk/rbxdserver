@@ -12,6 +12,7 @@ type Place struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Creator     string `json:"creator,omitempty"`
+	Created     string `json:"created,omitempty"`
 }
 
 type Index struct {
@@ -39,23 +40,22 @@ func (idx *Index) Scan() []Place {
 		slug := entry.Name()
 		placeDir := filepath.Join(idx.dir, slug)
 		
-		// Место валидно, если есть GameConfig.toml
 		if _, err := os.Stat(filepath.Join(placeDir, "GameConfig.toml")); os.IsNotExist(err) {
 			continue
 		}
 
 		place := Place{
 			Slug: slug,
-			Name: slug, // Дефолтное имя — slug
+			Name: slug,
 		}
 
-		// Best-effort парсинг info.json
 		infoPath := filepath.Join(placeDir, "info.json")
 		if data, err := os.ReadFile(infoPath); err == nil {
 			var info struct {
 				Name        string `json:"name"`
 				Description string `json:"description"`
 				Creator     string `json:"creator"`
+				Created     string `json:"created"`
 			}
 			if err := json.Unmarshal(data, &info); err == nil {
 				if info.Name != "" {
@@ -63,6 +63,7 @@ func (idx *Index) Scan() []Place {
 				}
 				place.Description = info.Description
 				place.Creator = info.Creator
+				place.Created = info.Created
 			}
 		}
 
