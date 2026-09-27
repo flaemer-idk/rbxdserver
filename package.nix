@@ -1,4 +1,3 @@
-# package.nix (для сервера rbxdserver)
 { lib
 , buildGoModule
 , fetchFromGitHub
@@ -31,10 +30,10 @@ buildGoModule {
     owner = "flaemer-idk";
     repo = "rbxdserver";
     rev = "main"; 
-    hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; # Пустой хэш
+    hash = "sha256-/yAOzYrBZPrlMsfx1eJM+NTFjP4fafjlXWZ7THtZXZk=";
   };
 
-  vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; # Пустой хэш
+  vendorHash = "sha256-0Qxw+MUYVgzgWB8vi3HBYtVXSq/btfh4ZfV/m1chNrA=";
 
   subPackages = [ "cmd/rbxdserver" ];
   nativeBuildInputs = [ makeWrapper ];

@@ -1,8 +1,8 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
+	"sync"
 
 	"rbxdserver/internal/config"
 	"rbxdserver/internal/placesindex"
@@ -10,41 +10,44 @@ import (
 	"rbxdserver/internal/supervisor"
 )
 
+// Router — HTTP/WS API. Без аутентификации: сервис рассчитан на доверенную
+// LAN и одного пользователя (решение зафиксировано в DESIGN.md).
 type Router struct {
-	cfg  *config.Config
-	sup  *supervisor.Supervisor
-	sess *session.Manager
-	idx  *placesindex.Index
+	cfg   *config.Config
+	sup   *supervisor.Supervisor
+	sess  *session.Manager
+	idx   *placesindex.Index
+	favMu sync.Mutex // read-modify-write favorites.json без гонок
 }
 
 func NewRouter(cfg *config.Config, sup *supervisor.Supervisor, sess *session.Manager, idx *placesindex.Index) *Router {
 	return &Router{cfg: cfg, sup: sup, sess: sess, idx: idx}
 }
 
-func (rt *Router) Start() error {
+func (rt *Router) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// Главная страница с веб-панелью
+	// Тестовая HTML-панель (статус, кнопки, join-команды).
 	mux.HandleFunc("/", rt.handleIndex)
 
-	// Мутирующие эндпоинты (защищены токеном)
-	mux.HandleFunc("/start", AuthMiddleware(rt.cfg.Token, rt.handleStart))
-	mux.HandleFunc("/stop", AuthMiddleware(rt.cfg.Token, rt.handleStop))
-	
-	// Чтение статуса (защищено токеном)
-	mux.HandleFunc("/status", AuthMiddleware(rt.cfg.Token, rt.handleStatus))
-	mux.HandleFunc("/logs", AuthMiddleware(rt.cfg.Token, rt.handleLogs))
-	
-	// Публичные / LAN эндпоинты
+	mux.HandleFunc("/start", rt.handleStart)
+	mux.HandleFunc("/stop", rt.handleStop)
+	mux.HandleFunc("/kill", rt.handleKill)
+	mux.HandleFunc("/status", rt.handleStatus)
+	mux.HandleFunc("/logs", rt.handleLogs)
+
 	mux.HandleFunc("/places", rt.handlePlaces)
 	mux.HandleFunc("/places/", rt.handlePlaceFile)
-	
-	// Избранное (защищено токеном)
-	mux.HandleFunc("/favorites", AuthMiddleware(rt.cfg.Token, rt.handleGetFavorites))
-	mux.HandleFunc("/favorites/toggle", AuthMiddleware(rt.cfg.Token, rt.handleToggleFavorite))
-	
-	// WebSocket presence (защищен токеном)
-	mux.HandleFunc("/session", AuthMiddleware(rt.cfg.Token, rt.handleSession))
 
-	return http.ListenAndServe(fmt.Sprintf(":%d", rt.cfg.Port), mux)
+	mux.HandleFunc("/favorites", rt.handleGetFavorites)
+	mux.HandleFunc("/favorites/toggle", rt.handleToggleFavorite)
+
+	// Каталог скинов rbxd (skins/*.json) — чтение и запись для rbxdclient.
+	mux.HandleFunc("/skins", rt.handleSkinsList)
+	mux.HandleFunc("/skins/", rt.handleSkinFile)
+
+	// WebSocket presence.
+	mux.HandleFunc("/session", rt.handleSession)
+
+	return mux
 }

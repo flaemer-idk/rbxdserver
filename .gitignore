@@ -1,0 +1,19 @@
+# Бинарник go build / тесты
+/rbxdserver
+*.test
+*.out
+*.prof
+
+# Nix (nix-build / nix build)
+result
+result-*
+
+# Рантайм-мусор демона (старые версии писали это в корень репо)
+LocalStorage/
+logs/
+state/
+wine/
+*.log
+
+# direnv-обвязка dev-shell
+.direnv/

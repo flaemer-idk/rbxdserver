@@ -3,10 +3,14 @@ package supervisor
 import (
 	"fmt"
 	"net"
-	"time"
 )
 
-// GetFreePort находит первый случайный свободный TCP-порт в системе
+// GetFreePort находит свободный TCP-порт. Классический TOCTOU: между
+// закрытием слушателя и биндом ребёнка порт может занять кто-то другой.
+// Это осознанный остаточный риск: готовность веба проверяется HTTP-запросом
+// (см. rfdproc.WaitForHTTP), так что «чужой» порт даст понятную ошибку старта,
+// а не тихую ложную готовность. RCC-порт — UDP, проверить нельзя в принципе
+// (документировано в rbxd INTEGRATION.md §3).
 func GetFreePort() (int, error) {
 	addr, err := net.ResolveTCPAddr("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -20,18 +24,4 @@ func GetFreePort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
-func WaitForPort(port int, timeout time.Duration) error {
-	address := fmt.Sprintf("127.0.0.1:%d", port)
-	deadline := time.Now().Add(timeout)
-	
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", address, 1*time.Second)
-		if err == nil {
-			conn.Close()
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	
-	return fmt.Errorf("timeout waiting for port %d", port)
-}
+func itoa(n int) string { return fmt.Sprintf("%d", n) }

@@ -7,16 +7,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
+
+	"rbxdserver/internal/supervisor"
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
+	// Панель/клиент могут заходить с любого origin: сервис для доверенной LAN.
+	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// handleStart — POST /start?place=<slug>.
+// Блокируется до полной готовности сессии (веб + RCC READY), может занять
+// до ~2.5 минут под Wine. Ответ: порты для подключения игрока.
 func (rt *Router) handleStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -33,16 +38,18 @@ func (rt *Router) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _, rccPort, webPort := rt.sup.GetStatus()
+	st := rt.sup.GetStatus()
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":   "OK",
-		"rcc_port": rccPort,
-		"web_port": webPort,
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":         "OK",
+		"rcc_port":       st.RccPort,
+		"web_port":       st.WebPort,
+		"roblox_version": rt.idx.GetRobloxVersion(place),
 	})
 }
 
+// handleStop — POST /stop. RCC умирает сразу, веб сессии живёт ещё
+// --web-cooldown (тёплый веб переиспользуется при быстром перезапуске).
 func (rt *Router) handleStop(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -56,59 +63,98 @@ func (rt *Router) handleStop(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
+// handleKill — POST /kill. Жёстко: убивает и RCC, и веб сессии немедленно,
+// без кулдауна. Для случая «всё зависло и /stop не помогает».
+func (rt *Router) handleKill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := rt.sup.KillCurrentPlace(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
+
 func (rt *Router) handleStatus(w http.ResponseWriter, r *http.Request) {
-	place, state, rccPort, webPort := rt.sup.GetStatus()
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"place":       place,
-		"state":       state,
-		"players":     rt.sess.Count(),
-		"player_list": rt.sess.Players(),
-		"rcc_port":    rccPort,
-		"web_port":    webPort,
+	st := rt.sup.GetStatus()
+	robloxVersion := ""
+	if st.Place != "" {
+		robloxVersion = rt.idx.GetRobloxVersion(st.Place)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"place": st.Place,
+		"state": st.State,
+		// Список игроков — из presence rbxd (кто реально в игре).
+		"players":        rt.sess.InGame(),
+		"player_list":    rt.sess.Players(),
+		"players_detail": rt.sess.PlayersDetail(),
+		// Легаси: открытые WS-соединения старого клиента (на списки не влияет).
+		"connections":    rt.sess.Connections(),
+		"rcc_port":       st.RccPort,
+		"web_port":       st.WebPort,
+		"cdn_port":       rt.cfg.CDNPort,
+		"roblox_version": robloxVersion,
 	})
 }
 
 func (rt *Router) handlePlaces(w http.ResponseWriter, r *http.Request) {
 	places := rt.idx.Scan()
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(places)
 }
 
+// handlePlaceFile — отдаёт обложки плейса (icon/banner) для каталога клиента.
+// Защита от path traversal: чистый slug по регэкспу + проверка резолва с
+// trailing-сепаратором + ResolveSymlinks (симлинки не выпускаем наружу).
 func (rt *Router) handlePlaceFile(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if len(parts) < 3 {
+	if len(parts) != 3 {
 		http.NotFound(w, r)
 		return
 	}
-	slug := parts[1]
-	fileName := parts[2]
+	slug, fileName := parts[1], parts[2]
 
-	if fileName != "icon.png" && fileName != "icon.jpg" && fileName != "banner.png" && fileName != "banner.jpg" {
+	allowed := map[string]bool{
+		"icon.png": true, "icon.jpg": true,
+		"banner.png": true, "banner.jpg": true,
+		"place-icon.png": true, "place-thumbnail.png": true,
+	}
+	if !allowed[fileName] {
 		http.Error(w, "Forbidden asset type", http.StatusForbidden)
 		return
 	}
+	if filepath.Base(slug) != slug || slug == "." || slug == ".." {
+		http.Error(w, "Forbidden path", http.StatusForbidden)
+		return
+	}
 
-	safePath := filepath.Clean(filepath.Join(rt.cfg.PlacesDir, slug, fileName))
-	if !strings.HasPrefix(safePath, filepath.Clean(rt.cfg.PlacesDir)) {
+	placesRoot, err := filepath.Abs(rt.cfg.PlacesDir)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	safePath := filepath.Join(placesRoot, slug, fileName)
+	resolved, err := filepath.EvalSymlinks(safePath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if resolved != filepath.Join(placesRoot, slug, fileName) &&
+		!strings.HasPrefix(resolved, placesRoot+string(filepath.Separator)) {
 		http.Error(w, "Forbidden path traversal attempt", http.StatusForbidden)
 		return
 	}
 
-	if _, err := os.Stat(safePath); os.IsNotExist(err) {
-		http.NotFound(w, r)
-		return
-	}
-
-	http.ServeFile(w, r, safePath)
+	http.ServeFile(w, r, resolved)
 }
 
 func (rt *Router) handleGetFavorites(w http.ResponseWriter, r *http.Request) {
-	favsPath := filepath.Join(rt.cfg.StateDir, "favorites.json")
-	if _, err := os.Stat(favsPath); os.IsNotExist(err) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte("[]"))
-		return
-	}
-	data, err := os.ReadFile(favsPath)
+	data, err := rt.readFavorites()
 	if err != nil {
 		http.Error(w, "Failed to read favorites", http.StatusInternalServerError)
 		return
@@ -124,15 +170,17 @@ func (rt *Router) handleToggleFavorite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	favsPath := filepath.Join(rt.cfg.StateDir, "favorites.json")
+	rt.favMu.Lock()
+	defer rt.favMu.Unlock()
+
+	favsPath := filepath.Join(rt.cfg.DataDir, "favorites.json")
 	var favs []string
-	if _, err := os.Stat(favsPath); err == nil {
-		data, _ := os.ReadFile(favsPath)
+	if data, err := os.ReadFile(favsPath); err == nil {
 		json.Unmarshal(data, &favs)
 	}
 
 	found := false
-	var newFavs []string
+	newFavs := make([]string, 0, len(favs)+1)
 	for _, f := range favs {
 		if f == slug {
 			found = true
@@ -155,14 +203,27 @@ func (rt *Router) handleToggleFavorite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	json.NewEncoder(w).Encode(map[string]any{
 		"status":   "OK",
 		"favorite": !found,
 	})
 }
 
+func (rt *Router) readFavorites() ([]byte, error) {
+	rt.favMu.Lock()
+	defer rt.favMu.Unlock()
+
+	favsPath := filepath.Join(rt.cfg.DataDir, "favorites.json")
+	data, err := os.ReadFile(favsPath)
+	if err != nil {
+		return []byte("[]"), nil
+	}
+	return data, nil
+}
+
 func (rt *Router) handleLogs(w http.ResponseWriter, r *http.Request) {
 	logs := rt.sup.GetLogs()
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(logs)
 }
 
@@ -175,8 +236,8 @@ func (rt *Router) handleSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	currPlace, state, _, _ := rt.sup.GetStatus()
-	if state != "Running" || currPlace != place {
+	st := rt.sup.GetStatus()
+	if st.State != supervisor.StateRunning || st.Place != place {
 		http.Error(w, "Requested place is not running", http.StatusConflict)
 		return
 	}
@@ -191,9 +252,14 @@ func (rt *Router) handleSession(w http.ResponseWriter, r *http.Request) {
 	rt.sess.Join(user)
 	defer rt.sess.Leave(user)
 
+	// Read deadline: отсутствие пинга в течение 60 с = клиент отвалился.
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
 	for {
-		_, _, err := conn.ReadMessage()
-		if err != nil {
+		if _, _, err := conn.ReadMessage(); err != nil {
 			break
 		}
 	}

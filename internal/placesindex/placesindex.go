@@ -5,14 +5,19 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 )
 
+var reRobloxVersion = regexp.MustCompile(`(?i)roblox_version\s*=\s*['"]?([^'"\r\n#\s]+)['"]?`)
+
 type Place struct {
-	Slug        string `json:"slug"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Creator     string `json:"creator,omitempty"`
-	Created     string `json:"created,omitempty"`
+	Slug          string `json:"slug"`
+	Name          string `json:"name"`
+	Description   string `json:"description,omitempty"`
+	Creator       string `json:"creator,omitempty"`
+	Created       string `json:"created,omitempty"`
+	RobloxVersion string `json:"roblox_version,omitempty"`
 }
 
 type Index struct {
@@ -23,8 +28,29 @@ func New(dir string) *Index {
 	return &Index{dir: dir}
 }
 
+func parseRobloxVersionFromTOML(filePath string) string {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+	matches := reRobloxVersion.FindStringSubmatch(string(data))
+	if len(matches) > 1 {
+		return strings.TrimSpace(matches[1])
+	}
+	return ""
+}
+
+func (idx *Index) GetRobloxVersion(slug string) string {
+	if slug == "" {
+		return ""
+	}
+	placeDir := filepath.Join(idx.dir, slug)
+	tomlPath := filepath.Join(placeDir, "GameConfig.toml")
+	return parseRobloxVersionFromTOML(tomlPath)
+}
+
 func (idx *Index) Scan() []Place {
-	var places []Place
+	places := make([]Place, 0) // никогда не null в JSON
 
 	entries, err := os.ReadDir(idx.dir)
 	if err != nil {
@@ -39,14 +65,16 @@ func (idx *Index) Scan() []Place {
 
 		slug := entry.Name()
 		placeDir := filepath.Join(idx.dir, slug)
-		
-		if _, err := os.Stat(filepath.Join(placeDir, "GameConfig.toml")); os.IsNotExist(err) {
+		tomlPath := filepath.Join(placeDir, "GameConfig.toml")
+
+		if _, err := os.Stat(tomlPath); os.IsNotExist(err) {
 			continue
 		}
 
 		place := Place{
-			Slug: slug,
-			Name: slug,
+			Slug:          slug,
+			Name:          slug,
+			RobloxVersion: parseRobloxVersionFromTOML(tomlPath),
 		}
 
 		infoPath := filepath.Join(placeDir, "info.json")
